@@ -26,18 +26,20 @@
     '<a target="_blank" rel="noreferrer" class="btn btn--outline btn--h12 btn--px8 btn--15" href="' + AK.waLink('Hello Antique Khan!') + '">' + AK.icon('message-circle') + 'WhatsApp Us</a>' +
     '</div></div></div></section>' +
 
+    /* Featured Pieces — admin-curated showcase (separate from products;
+       hidden entirely while there is nothing published) */
+    '<section id="fp-section" aria-label="Featured pieces" hidden>' +
+    '<div class="container section">' +
+    '<div class="section-head"><div><p class="eyebrow">From the Gallery</p><h2 class="section-head__title">Featured Pieces</h2></div>' +
+    '<a href="shop.html" class="viewall">View all →</a></div>' +
+    '<div id="fp-grid" class="fp-grid"></div>' +
+    '</div></section>' +
+
     /* Categories */
     '<section aria-label="Browse by category"><div class="container section">' +
     '<div class="section-head"><div><h2 class="section-head__title">Browse the Collection</h2></div>' +
     '<a href="shop.html" class="viewall">View all →</a></div>' +
     '<div class="chips-row no-scrollbar" id="cat-chips"></div>' +
-    '</div></section>' +
-
-    /* Featured */
-    '<section aria-label="Featured antiques"><div class="container section">' +
-    '<div class="section-head"><div><p class="eyebrow">Curated</p><h2 class="section-head__title">Featured Antiques</h2></div>' +
-    '<a href="shop.html" class="viewall">View all →</a></div>' +
-    '<div id="featured"></div>' +
     '</div></section>' +
 
     /* Newly added */
@@ -111,21 +113,14 @@
     hero.parentElement.style.background = 'var(--secondary)';
   };
 
-  /* data ------------------------------------------------------------------- */
-  var featuredEl = document.getElementById('featured');
+  /* data -------------------------------------------------------------------
+     (the old "Featured Antiques" section was removed — homepage curation
+     now lives exclusively in the Featured Pieces showcase above)          */
   var newlyEl = document.getElementById('newly');
-  featuredEl.innerHTML = AK.gridSkeleton('grid-skel--md4', 4);
   newlyEl.innerHTML = AK.gridSkeleton('grid-skel--md4', 4);
 
   function retryButtons() {
     return '<div style="display:flex;justify-content:center;"><button type="button" class="btn btn--outline btn--h11" data-retry="1">Retry</button></div>';
-  }
-
-  function renderFeatured(items) {
-    featuredEl.innerHTML =
-      '<div class="grid-products grid-products--md4">' +
-      items.slice(0, 4).map(function (p, i) { return AK.productCard(p, i < 2); }).join('') +
-      '</div>';
   }
 
   function renderNewly(items) {
@@ -135,49 +130,20 @@
       '</div>';
   }
 
-  var latest = { featured: [], newest: [] };
-
   function load() {
-    featuredEl.innerHTML = AK.gridSkeleton('grid-skel--md4', 4);
     newlyEl.innerHTML = AK.gridSkeleton('grid-skel--md4', 4);
 
-    var featuredQ = AK.fetchProducts({ status: 'active', featured: true });
-    var newestQ = AK.fetchProducts({ status: 'active', sort: 'newest' });
-
-    newestQ.then(function (res) {
+    AK.fetchProducts({ status: 'active', sort: 'newest' }).then(function (res) {
       if (res.error) {
-        newestQ.err = true;
-      } else {
-        latest.newest = res.products;
-        renderNewly(res.products);
-      }
-      checkFeatured();
-    });
-
-    featuredQ.then(function (res) {
-      featuredQ.res = res;
-      checkFeatured();
-    });
-
-    function checkFeatured() {
-      if (!featuredQ.res) return; // newest may finish first; wait for featured too
-      var res = featuredQ.res;
-      if (res.error) {
-        if (newestQ.err) {
-          featuredEl.innerHTML = AK.emptyState('shield-check', "Couldn't load the collection", 'Please check your connection and try again.', retryButtons());
-          newlyEl.innerHTML = AK.emptyState('shield-check', "Couldn't load the collection", 'Please check your connection and try again.', retryButtons());
-        } else if (latest.newest.length > 0) {
-          renderFeatured(latest.newest); // newest-fallback (same as the original)
-        }
+        newlyEl.innerHTML = AK.emptyState('shield-check', "Couldn't load the collection", 'Please check your connection and try again.', retryButtons());
         return;
       }
-      var items = res.products.length > 0 ? res.products : latest.newest;
-      if (items.length === 0) {
-        featuredEl.innerHTML = AK.emptyState('package-open', 'No pieces yet', 'Our curators are preparing the next drop — check back soon.');
+      if (res.products.length === 0) {
+        newlyEl.innerHTML = AK.emptyState('package-open', 'No pieces yet', 'Our curators are preparing the next drop — check back soon.');
       } else {
-        renderFeatured(items);
+        renderNewly(res.products);
       }
-    }
+    });
   }
 
   root.addEventListener('click', function (e) {
@@ -185,5 +151,27 @@
   });
 
   if (AK.isConfigured()) load();
-  else { featuredEl.innerHTML = ''; newlyEl.innerHTML = ''; }
+  else newlyEl.innerHTML = '';
+
+  /* Featured Pieces: entries selected in Admin → Featured Pieces, each one
+     an EXISTING product (Available or Sold) shown with its own photo, title
+     and caption. Only published entries, in the saved order; sold products
+     keep appearing here until the admin hides or removes the entry. The
+     section stays hidden when nothing is published or the table isn't set
+     up yet. */
+  if (AK.isConfigured()) {
+    AK.fetchFeaturedPieces().then(function (res) {
+      if (res.error || !res.pieces || !res.pieces.length) return;
+      var grid = document.getElementById('fp-grid');
+      var section = document.getElementById('fp-section');
+      if (!grid || !section) return;
+      var cards = res.pieces
+        .map(function (f) { return AK.featuredCard(f); })
+        .filter(Boolean)
+        .join('');
+      if (!cards) return;
+      grid.innerHTML = cards;
+      section.hidden = false;
+    });
+  }
 })();

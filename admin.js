@@ -14,14 +14,18 @@
     tab: 'products',
     products: [],
     orders: [],
+    featured: [],
     loadingProducts: true,
     loadingOrders: true,
+    loadingFeatured: true,
     search: '',
     statusFilter: 'all',
     orderFilter: 'all',
+    featFilter: 'all',
     formOpen: false,
     editing: null,
     busyId: null,
+    featBusyId: null,
   };
 
   AK.mountChrome(null);
@@ -105,9 +109,11 @@
   function loadAll() {
     state.loadingProducts = true;
     state.loadingOrders = true;
+    state.loadingFeatured = true;
     render();
     refreshProducts();
     refreshOrders();
+    refreshFeatured();
   }
 
   function refreshProducts() {
@@ -155,6 +161,20 @@
       });
   }
 
+  function refreshFeatured() {
+    state.loadingFeatured = true;
+    return AK.fetchFeaturedPieces({ all: true }).then(function (res) {
+      state.loadingFeatured = false;
+      if (res.error) {
+        AK.toast.error(errText(res.error));
+        state.featured = [];
+      } else {
+        state.featured = res.pieces;
+      }
+      render();
+    });
+  }
+
   function renderDashboard() {
     var activeCount = state.products.filter(function (p) { return p.status === 'active'; }).length;
     var soldCount = state.products.filter(function (p) { return p.status === 'sold'; }).length;
@@ -182,6 +202,7 @@
       '<section aria-label="Management">' +
       '<div class="tabs">' +
       '<button type="button" class="tab' + (state.tab === 'products' ? ' is-active' : '') + '" data-tab="products">Products</button>' +
+      '<button type="button" class="tab' + (state.tab === 'featured' ? ' is-active' : '') + '" data-tab="featured">Featured Pieces</button>' +
       '<button type="button" class="tab' + (state.tab === 'orders' ? ' is-active' : '') + '" data-tab="orders">Orders' +
       (newOrders > 0 ? '<span class="pill-count">' + newOrders + '</span>' : '') + '</button>' +
       '<button type="button" class="tab' + (state.tab === 'settings' ? ' is-active' : '') + '" data-tab="settings">Settings</button>' +
@@ -217,6 +238,7 @@
 
     var body = document.getElementById('tab-body');
     if (state.tab === 'products') renderProductsTab(body);
+    else if (state.tab === 'featured') renderFeaturedTab(body);
     else if (state.tab === 'orders') renderOrdersTab(body);
     else renderSettingsTab(body);
   }
@@ -359,11 +381,9 @@
       confirmLabel: 'Delete',
     }).then(function (ok) {
       if (!ok) return;
-      /* best-effort storage cleanup */
-      p.images.forEach(function (img) {
-        var m = String(img.url).match(/\/storage\/v1\/object\/public\/[^/]+\/(.+)$/);
-        if (m) deleteStorageObject(m[1]);
-      });
+      /* best-effort storage cleanup — only files no other product uses
+         (Featured Pieces own no images: they reference products) */
+      p.images.forEach(function (img) { safeCleanupImage(img.url); });
       AK.db.from('products').delete().eq('id', p.id).then(function (res) {
         if (res.error) AK.toast.error(errText(res.error));
         else AK.toast.success('"' + p.title + '" deleted');
@@ -382,6 +402,105 @@
     });
   }
 
+  /* ------------------------------------------- shared image helpers -------
+     Used by the Products manager. Featured Pieces own no images — they
+     reference existing products — so no featured checks are needed. */
+
+  /* Bucket path from a stored image URL (public/signed URL or bare path). */
+  function storagePathFromUrl(url) {
+    var s = String(url || '').trim();
+    var m = s.match(/\/storage\/v1\/object\/(?:public\/)?[^/]+\/(.+?)(?:\?.*)?$/);
+    if (m) return decodeURIComponent(m[1]);
+    if (s && !/^https?:/i.test(s) && s.charAt(0) !== '/' && s.charAt(0) !== '#') {
+      return s.replace(/^\.\//, '');
+    }
+    return null;
+  }
+
+  /* Is this image still referenced by any product? (products are never
+     touched by the Featured manager, and their photos must never be
+     removed by it either) */
+  function isImageUsedByProducts(url) {
+    var u = storagePathFromUrl(url);
+    if (!u) return false; // external URL — nothing in the bucket to protect
+    return state.products.some(function (p) {
+      var urls = [p.cover].concat((p.images || []).map(function (im) { return im.url; })).filter(Boolean);
+      return urls.some(function (pu) { return storagePathFromUrl(pu) === u; });
+    });
+  }
+
+  /* Remove a product photo from Storage ONLY when no other product still
+     uses the same file. */
+  function safeCleanupImage(url) {
+    if (!url) return;
+    if (isImageUsedByProducts(url)) return;
+    var path = storagePathFromUrl(url);
+    if (path) deleteStorageObject(path);
+  }
+
+  /* Shared client-side compression (identical to the original: ≤1600px JPEG 0.82). */
+  function compressToJpeg(file) {
+    return new Promise(function (resolve) {
+      var done = function (source, w, h, cleanup) {
+        try {
+          var scale = Math.min(1, 1600 / Math.max(w, h));
+          var cw = Math.max(1, Math.round(w * scale));
+          var ch = Math.max(1, Math.round(h * scale));
+          var canvas = document.createElement('canvas');
+          canvas.width = cw;
+          canvas.height = ch;
+          var ctx = canvas.getContext('2d');
+          if (!ctx) { cleanup(); resolve(null); return; }
+          ctx.drawImage(source, 0, 0, cw, ch);
+          canvas.toBlob(function (blob) { cleanup(); resolve(blob); }, 'image/jpeg', 0.82);
+        } catch (e) { cleanup(); resolve(null); }
+      };
+      if (window.createImageBitmap) {
+        createImageBitmap(file).then(function (bmp) {
+          done(bmp, bmp.width, bmp.height, function () { bmp.close(); });
+        }).catch(function () { fallbackImg(); });
+      } else fallbackImg();
+
+      function fallbackImg() {
+        var url = URL.createObjectURL(file);
+        var img = new Image();
+        img.onload = function () { done(img, img.naturalWidth || img.width, img.naturalHeight || img.height, function () { URL.revokeObjectURL(url); }); };
+        img.onerror = function () { URL.revokeObjectURL(url); resolve(null); };
+        img.src = url;
+      }
+    });
+  }
+
+  /* Shared XHR upload to the product-images bucket (progress callback).
+     folder: 'products' | 'featured' */
+  function uploadToBucket(blob, folder, token, onProgress) {
+    return new Promise(function (resolve, reject) {
+      var ext = (blob.type === 'image/png' && '.png') || (blob.type === 'image/webp' && '.webp') || '.jpg';
+      var path = folder + '/' + Date.now() + '-' + Math.random().toString(36).slice(2, 8) + ext;
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', storeUrl(path));
+      xhr.setRequestHeader('apikey', C.SUPABASE_ANON_KEY);
+      xhr.setRequestHeader('authorization', 'Bearer ' + token);
+      xhr.setRequestHeader('x-upsert', 'true');
+      if (onProgress) {
+        xhr.upload.onprogress = function (e) {
+          if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+        };
+      }
+      xhr.onload = function () {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve({ url: publicStoreUrl(path), path: path });
+        } else {
+          var msg = 'Upload failed (' + xhr.status + ')';
+          try { msg = JSON.parse(xhr.responseText).message || msg; } catch (e) { /* keep */ }
+          reject(new Error(msg));
+        }
+      };
+      xhr.onerror = function () { reject(new Error('Network error during upload')); };
+      xhr.send(blob);
+    });
+  }
+
   /* ==================================================== PRODUCT FORM SHEET */
   function openForm(product) {
     state.formOpen = true;
@@ -392,7 +511,6 @@
       price: product ? String(product.price) : '',
       category: product ? product.category : '',
       status: product ? product.status : 'active',
-      featured: product ? product.featured : false,
       description: product ? product.description || '' : '',
       caption: product ? product.caption || '' : '',
       height: product ? product.height || '' : '',
@@ -453,10 +571,6 @@
             '<div class="field"><label class="label" for="f-caption">Caption (optional)</label>' +
             '<input class="input" id="f-caption" placeholder="A short caption shown under the description" value="' + AK.esc(data.caption) + '" /></div>' +
 
-            '<div class="switchrow"><div><p class="label" style="font-size:15px;">Featured piece</p>' +
-            '<p class="hint">Featured pieces appear in the Home page featured section</p></div>' +
-            '<input type="checkbox" class="switch" id="f-featured"' + (data.featured ? ' checked' : '') + ' aria-label="Featured piece" /></div>' +
-
             '<div class="field"><label class="label" for="f-description">Description <span class="req">*</span></label>' +
             '<textarea class="textarea" id="f-description" rows="5"' + (fieldErrors.description ? ' aria-invalid="true"' : '') + '>' + AK.esc(data.description) + '</textarea>' + errP('description') + '</div>' +
 
@@ -485,9 +599,6 @@
           });
           formEl.querySelector('#f-status').addEventListener('change', function () {
             data.status = this.value;
-          });
-          formEl.querySelector('#f-featured').addEventListener('change', function () {
-            data.featured = this.checked;
           });
 
           renderUploader(formEl.querySelector('#uploader'));
@@ -564,71 +675,8 @@
             }
           }
 
-          /* client-side compression (identical to the original: ≤1600px JPEG 0.82) */
-          function compressToJpeg(file) {
-            return new Promise(function (resolve) {
-              var done = function (source, w, h, cleanup) {
-                try {
-                  var scale = Math.min(1, 1600 / Math.max(w, h));
-                  var cw = Math.max(1, Math.round(w * scale));
-                  var ch = Math.max(1, Math.round(h * scale));
-                  var canvas = document.createElement('canvas');
-                  canvas.width = cw;
-                  canvas.height = ch;
-                  var ctx = canvas.getContext('2d');
-                  if (!ctx) { cleanup(); resolve(null); return; }
-                  ctx.drawImage(source, 0, 0, cw, ch);
-                  canvas.toBlob(function (blob) { cleanup(); resolve(blob); }, 'image/jpeg', 0.82);
-                } catch (e) { cleanup(); resolve(null); }
-              };
-              if (window.createImageBitmap) {
-                createImageBitmap(file).then(function (bmp) {
-                  done(bmp, bmp.width, bmp.height, function () { bmp.close(); });
-                }).catch(function () { fallbackImg(); });
-              } else fallbackImg();
-
-              function fallbackImg() {
-                var url = URL.createObjectURL(file);
-                var img = new Image();
-                img.onload = function () { done(img, img.naturalWidth || img.width, img.naturalHeight || img.height, function () { URL.revokeObjectURL(url); }); };
-                img.onerror = function () { URL.revokeObjectURL(url); resolve(null); };
-                img.src = url;
-              }
-            });
-          }
-
-          function uploadOne(blob, filename, token) {
-            return new Promise(function (resolve, reject) {
-              var path = 'products/' + filename;
-              var ext = (blob.type === 'image/png' && '.png') || (blob.type === 'image/webp' && '.webp') || '.jpg';
-              path = 'products/' + Date.now() + '-' + Math.random().toString(36).slice(2, 8) + ext;
-              var xhr = new XMLHttpRequest();
-              xhr.open('POST', storeUrl(path));
-              xhr.setRequestHeader('apikey', C.SUPABASE_ANON_KEY);
-              xhr.setRequestHeader('authorization', 'Bearer ' + token);
-              xhr.setRequestHeader('x-upsert', 'true');
-              xhr.upload.onprogress = function (e) {
-                if (e.lengthComputable) {
-                  var pct = Math.round((e.loaded / e.total) * 100);
-                  var fill = document.getElementById('up-fill');
-                  var txt = document.getElementById('up-text');
-                  if (fill) fill.style.width = pct + '%';
-                  if (txt) txt.textContent = 'Uploading… ' + pct + '%';
-                }
-              };
-              xhr.onload = function () {
-                if (xhr.status >= 200 && xhr.status < 300) {
-                  resolve({ url: publicStoreUrl(path), path: path });
-                } else {
-                  var msg = 'Upload failed (' + xhr.status + ')';
-                  try { msg = JSON.parse(xhr.responseText).message || msg; } catch (e) { /* keep */ }
-                  reject(new Error(msg));
-                }
-              };
-              xhr.onerror = function () { reject(new Error('Network error during upload')); };
-              xhr.send(blob);
-            });
-          }
+          /* compression + upload now use the shared helpers above
+             (identical logic for both managers) */
 
           function handleFiles(fileList) {
             var files = Array.prototype.slice.call(fileList || []).filter(function (f) { return /^image\//.test(f.type); });
@@ -640,6 +688,11 @@
             fill.style.width = '0%';
             txt.textContent = 'Preparing…';
 
+            function showPct(pct) {
+              fill.style.width = pct + '%';
+              txt.textContent = 'Uploading… ' + pct + '%';
+            }
+
             AK.getSession().then(function (session) {
               if (!session) throw new Error('Session expired — please sign in again');
               var chain = Promise.resolve();
@@ -647,8 +700,7 @@
                 chain = chain.then(function () {
                   return compressToJpeg(file).then(function (blob) {
                     var out = blob || file;
-                    var name = file.name.replace(/\.[^./\\]+$/, '').replace(/[^\w-]+/g, '-').slice(0, 40) || 'photo';
-                    return uploadOne(out, name + '-' + Date.now() + '-' + Math.floor(Math.random() * 1e4) + '.jpg', session.access_token)
+                    return uploadToBucket(out, 'products', session.access_token, showPct)
                       .then(function (r) {
                         images.push({ url: r.url, isMain: false });
                         normalize();
@@ -704,7 +756,6 @@
             price: priceNum,
             category: data.category,
             status: data.status,
-            featured: data.featured,
             image_url: imgCols.image_url,
             image_urls: imgCols.image_urls,
             updated_at: new Date().toISOString(),
@@ -729,6 +780,450 @@
             saveBtn.disabled = false;
             saveBtn.textContent = 'Save Piece';
             AK.toast.error(errText(err));
+          });
+        });
+
+        renderForm();
+      },
+    });
+  }
+
+  /* ================================================== FEATURED PIECES TAB ==
+     A separate manager — completely independent from Products. It is a
+     SELECTOR over the shop's existing products, NOT a product/image system:
+       · its own Supabase table (featured_pieces) and its own controls
+       · each entry simply picks ONE existing product (Available or Sold)
+         and stores its product_id + display order + published/hidden flag
+       · the card uses the product's OWN image, title and caption — nothing
+         is uploaded, duplicated or copied
+       · selling the product never removes or hides the entry — it stays
+         featured until the admin hides or removes the entry
+       · hiding/deleting an entry never touches the product, its status or
+         its photos (deleting the product removes its entry — the DB link
+         is ON DELETE CASCADE)
+  ========================================================================== */
+  function featBadge(active) {
+    return active
+      ? '<span class="badge badge--outline status-badge--active"><span class="dot" aria-hidden="true"></span>Published</span>'
+      : '<span class="badge badge--outline status-badge--inactive"><span class="dot" aria-hidden="true"></span>Hidden</span>';
+  }
+
+  function nextFeaturedOrder() {
+    var max = 0;
+    state.featured.forEach(function (f) { if (f.displayOrder > max) max = f.displayOrder; });
+    return max + 10;
+  }
+
+  function renderFeaturedTab(host) {
+    var counts = {
+      all: state.featured.length,
+      active: state.featured.filter(function (f) { return f.active; }).length,
+      hidden: state.featured.filter(function (f) { return !f.active; }).length,
+    };
+    var visible = state.featFilter === 'all'
+      ? state.featured
+      : state.featured.filter(function (f) { return state.featFilter === 'active' ? f.active : !f.active; });
+
+    host.innerHTML =
+      '<div class="admin-toolbar">' +
+      '<p class="feat-hint">Pick products you already sell — Available or Sold — to show them on the homepage. Each card uses the product\u2019s own photo and title. Drag a card (or use the arrows) to set the order visitors see; hide one any time without removing it.</p>' +
+      '<button type="button" class="btn btn--primary btn--h11" id="feat-add"><span class="spin-btn">' + AK.icon('plus') + 'Add Featured Piece</span></button>' +
+      '</div>' +
+      '<div class="status-chips no-scrollbar" role="group" aria-label="Filter featured pieces" style="margin-top:0.75rem;">' +
+      ['all:All', 'active:Published', 'hidden:Hidden'].map(function (pair) {
+        var kv = pair.split(':');
+        return '<button type="button" class="schip' + (state.featFilter === kv[0] ? ' is-active' : '') + '" data-ff="' + kv[0] + '" aria-pressed="' + (state.featFilter === kv[0]) + '">' +
+          kv[1] + ' (' + counts[kv[0]] + ')</button>';
+      }).join('') +
+      '</div>' +
+      '<div id="feat-host"></div>';
+
+    var listHost = document.getElementById('feat-host');
+
+    if (state.loadingFeatured) {
+      listHost.innerHTML = '<div style="margin-top:0.75rem;display:flex;flex-direction:column;gap:0.75rem;">' +
+        [0, 1, 2].map(function () { return '<div class="skel" style="height:6rem;border-radius:0.75rem;"></div>'; }).join('') + '</div>';
+    } else if (visible.length === 0) {
+      var hasFilter = state.featFilter !== 'all';
+      listHost.innerHTML = AK.emptyState('sparkles', hasFilter ? 'Nothing here' : 'No featured pieces yet',
+        hasFilter ? 'Try a different filter.' : 'Pick products from your shop to show them on the homepage — Available and Sold both work.',
+        hasFilter ? '' : '<div style="display:flex;justify-content:center;"><button type="button" class="btn btn--primary btn--h11" data-feataddfirst="1"><span class="spin-btn">' + AK.icon('plus') + 'Feature your first product</span></button></div>');
+    } else {
+      listHost.innerHTML = '<p class="feat-legend">' + AK.icon('grip-vertical') + 'Drag to reorder — this is the order on the homepage</p>' +
+        '<ul class="flist" id="feat-list">' + visible.map(function (f, idx) {
+          /* always show the product's CURRENT record (title/price/status),
+             even if it changed in the Products tab during this session */
+          var prod = f.product
+            ? (state.products.find(function (x) { return x.id === f.productId; }) || f.product)
+            : null;
+          var thumb = prod ? AK.mainImage(prod) : '';
+          var actions = [
+            '<button type="button" class="rowbtn rowbtn--icon" data-fmove="up" data-fid="' + AK.esc(f.id) + '" aria-label="Move earlier"' + (idx === 0 ? ' disabled' : '') + '>' + AK.icon('chevron-up') + '</button>',
+            '<button type="button" class="rowbtn rowbtn--icon" data-fmove="down" data-fid="' + AK.esc(f.id) + '" aria-label="Move later"' + (idx === visible.length - 1 ? ' disabled' : '') + '>' + AK.icon('chevron-down') + '</button>',
+            '<button type="button" class="rowbtn" data-fpreview="' + AK.esc(f.id) + '"><span class="spin-btn">' + AK.icon('search') + 'Preview</span></button>',
+            '<button type="button" class="rowbtn" data-fedit="' + AK.esc(f.id) + '"><span class="spin-btn">' + AK.icon('pencil') + 'Edit</span></button>',
+            '<button type="button" class="rowbtn" data-factive="' + AK.esc(f.id) + '"' + (state.featBusyId === f.id ? ' disabled' : '') + '>' +
+              (state.featBusyId === f.id ? spinnerSmall() : '<span class="spin-btn">' + AK.icon(f.active ? 'eye-off' : 'eye') + (f.active ? 'Hide' : 'Publish') + '</span>') + '</button>',
+            '<button type="button" class="rowbtn rowbtn--danger" data-fdel="' + AK.esc(f.id) + '"><span class="spin-btn">' + AK.icon('trash-2') + 'Remove</span></button>',
+          ];
+          return (
+            '<li class="fitem' + (state.featBusyId === f.id ? ' is-busy' : '') + '" data-fid="' + AK.esc(f.id) + '" draggable="true">' +
+            '<span class="fitem__grip" aria-hidden="true">' + AK.icon('grip-vertical') + '</span>' +
+            (thumb
+              ? '<img class="fitem__thumb" src="' + AK.esc(thumb) + '" alt="" loading="lazy" onerror="AK.imgFail(this)" />'
+              : '<div class="fitem__thumb fitem__thumb--ph">' + AK.icon('image', 'ic--18 tx-muted') + '</div>') +
+            '<div class="fitem__mid">' +
+            '<p class="fitem__title line-clamp-1">' + (prod ? AK.esc(prod.title) : '<span class="tx-muted">Product no longer available</span>') + '</p>' +
+            (prod
+              ? '<p class="fitem__meta">' + AK.fmtEGP(prod.price) + ' · ' + (C.STATUS_LABELS[prod.status] || prod.status) +
+                (prod.caption ? '<span class="line-clamp-1"> — ' + AK.esc(prod.caption) + '</span>' : '') + '</p>'
+              : '<p class="fitem__meta">This product was removed from the shop — remove this entry.</p>') +
+            '<div style="margin-top:0.25rem;display:flex;align-items:center;gap:0.375rem;flex-wrap:wrap;">' +
+            '<span class="forderchip">#' + (idx + 1) + '</span>' +
+            (prod ? AK.statusBadge(prod.status) : '') + featBadge(f.active) + '</div>' +
+            '</div>' +
+            '<div class="fitem__actions">' + actions.join('') + '</div>' +
+            '</li>'
+          );
+        }).join('') + '</ul>';
+    }
+
+    /* ---- toolbar ---- */
+    document.getElementById('feat-add').addEventListener('click', function () { openFeatForm(null); });
+    host.querySelectorAll('[data-ff]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        state.featFilter = b.getAttribute('data-ff');
+        render();
+      });
+    });
+    host.querySelectorAll('[data-feataddfirst]').forEach(function (b) {
+      b.addEventListener('click', function () { openFeatForm(null); });
+    });
+
+    /* ---- row actions ---- */
+    host.querySelectorAll('[data-fedit]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var f = state.featured.find(function (x) { return x.id === b.getAttribute('data-fedit'); });
+        openFeatForm(f);
+      });
+    });
+    host.querySelectorAll('[data-fpreview]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var f = state.featured.find(function (x) { return x.id === b.getAttribute('data-fpreview'); });
+        if (f) openFeatPreview(f);
+      });
+    });
+    host.querySelectorAll('[data-factive]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var f = state.featured.find(function (x) { return x.id === b.getAttribute('data-factive'); });
+        if (f) toggleFeaturedActive(f);
+      });
+    });
+    host.querySelectorAll('[data-fdel]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var f = state.featured.find(function (x) { return x.id === b.getAttribute('data-fdel'); });
+        if (f) handleFeaturedDelete(f);
+      });
+    });
+    host.querySelectorAll('[data-fmove]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        moveFeaturedBy(b.getAttribute('data-fid'), b.getAttribute('data-fmove') === 'up' ? -1 : 1);
+      });
+    });
+
+    /* ---- drag & drop reorder ---- */
+    var listEl = document.getElementById('feat-list');
+    if (listEl) {
+      var dragId = null;
+      function clearMarks() {
+        listEl.querySelectorAll('.fitem').forEach(function (li) {
+          li.classList.remove('drop-before', 'drop-after');
+        });
+      }
+      Array.prototype.forEach.call(listEl.children, function (li) {
+        li.addEventListener('dragstart', function (e) {
+          dragId = li.getAttribute('data-fid');
+          li.classList.add('is-dragging');
+          if (e.dataTransfer) {
+            e.dataTransfer.effectAllowed = 'move';
+            try { e.dataTransfer.setData('text/plain', dragId); } catch (err) { /* IE */ }
+          }
+        });
+        li.addEventListener('dragend', function () {
+          li.classList.remove('is-dragging');
+          clearMarks();
+          dragId = null;
+        });
+        li.addEventListener('dragover', function (e) {
+          if (!dragId || dragId === li.getAttribute('data-fid')) return;
+          e.preventDefault();
+          if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+          var rect = li.getBoundingClientRect();
+          var before = (e.clientY - rect.top) < rect.height / 2;
+          li.classList.toggle('drop-before', before);
+          li.classList.toggle('drop-after', !before);
+        });
+        li.addEventListener('dragleave', function () {
+          li.classList.remove('drop-before', 'drop-after');
+        });
+        li.addEventListener('drop', function (e) {
+          e.preventDefault();
+          var before = li.classList.contains('drop-before');
+          li.classList.remove('drop-before', 'drop-after');
+          var src = dragId;
+          dragId = null;
+          moveFeaturedTo(src, li.getAttribute('data-fid'), before);
+        });
+      });
+    }
+  }
+
+  /* Move a featured entry relative to another (drop above/below target). */
+  function moveFeaturedTo(srcId, targetId, before) {
+    if (!srcId || !targetId || srcId === targetId) return;
+    var arr = state.featured.slice();
+    var from = -1, to = -1;
+    arr.forEach(function (f, i) {
+      if (f.id === srcId) from = i;
+      if (f.id === targetId) to = i;
+    });
+    if (from === -1 || to === -1) return;
+    var item = arr.splice(from, 1)[0];
+    var target = arr.findIndex(function (f) { return f.id === targetId; });
+    if (target === -1) return;
+    arr.splice(before ? target : target + 1, 0, item);
+    state.featured = arr;
+    render();
+    persistFeaturedOrder(arr);
+  }
+
+  /* Arrow-button reorder (works on touch screens where HTML5 drag
+     and drop is unavailable). */
+  function moveFeaturedBy(id, delta) {
+    var arr = state.featured.slice();
+    var i = -1;
+    arr.forEach(function (f, idx) { if (f.id === id) i = idx; });
+    var j = i + delta;
+    if (i === -1 || j < 0 || j >= arr.length) return;
+    var t = arr[j]; arr[j] = arr[i]; arr[i] = t;
+    state.featured = arr;
+    render();
+    persistFeaturedOrder(arr);
+  }
+
+  /* Renumber every entry (10, 20, 30…) in the new order and save. */
+  function persistFeaturedOrder(arr) {
+    var chain = Promise.resolve();
+    arr.forEach(function (f, i) {
+      chain = chain.then(function () {
+        return AK.db
+          .from('featured_pieces')
+          .update({ display_order: (i + 1) * 10, updated_at: new Date().toISOString() })
+          .eq('id', f.id)
+          .then(function (res) {
+            if (res.error) throw res.error;
+          });
+      });
+    });
+    chain.then(function () {
+      AK.toast.success('Featured order saved');
+      refreshFeatured();
+    }).catch(function (err) {
+      AK.toast.error(errText(err));
+      refreshFeatured(); // resync with the server state
+    });
+  }
+
+  function toggleFeaturedActive(f) {
+    if (state.featBusyId) return;
+    state.featBusyId = f.id;
+    render();
+    AK.db
+      .from('featured_pieces')
+      .update({ active: !f.active, updated_at: new Date().toISOString() })
+      .eq('id', f.id)
+      .then(function (res) {
+        state.featBusyId = null;
+        if (res.error) AK.toast.error(errText(res.error));
+        else AK.toast.success(f.active ? 'Hidden from the homepage — publish it again any time' : 'Published to the homepage');
+        refreshFeatured();
+      });
+  }
+
+  function handleFeaturedDelete(f) {
+    var prod = f.product;
+    AK.confirm({
+      title: 'Remove this featured piece?',
+      description:
+        'This only removes ' + (prod ? '\u201c' + prod.title + '\u201d' : 'this entry') +
+        ' from the homepage showcase. The product itself, its status and its photos are NOT touched. This action cannot be undone.',
+      confirmLabel: 'Remove',
+    }).then(function (ok) {
+      if (!ok) return;
+      AK.db.from('featured_pieces').delete().eq('id', f.id).then(function (res) {
+        if (res.error) {
+          AK.toast.error(errText(res.error));
+          return;
+        }
+        AK.toast.success('Removed from the homepage showcase — the product is untouched');
+        refreshFeatured();
+      });
+    });
+  }
+
+  function openFeatPreview(f) {
+    /* preview the product's CURRENT record, like the rows do */
+    var live = f.product
+      ? (state.products.find(function (x) { return x.id === f.productId; }) || f.product)
+      : null;
+    var fview = { product: live, active: f.active };
+    AK.openSheet({
+      side: 'bottom',
+      title: 'Homepage preview',
+      description: 'Exactly how this card appears in the Featured Pieces section',
+      build: function (body) {
+        body.innerHTML =
+          '<div class="fpreview fpreview--sheet">' + (fview.product
+            ? AK.featuredCard(fview)
+            : '<div class="fpreview__empty">' + AK.icon('image') + '<span>Nothing to preview — the selected product is gone.</span></div>') + '</div>' +
+          '<p class="hint tx-center" style="margin-top:1rem;">' +
+          (f.active
+            ? 'Currently published — visitors see this on the homepage.'
+            : 'Currently hidden — publish it to show it on the homepage.') +
+          '</p>';
+      },
+    });
+  }
+
+  /* ------------------------------------------------- featured form sheet */
+  function openFeatForm(piece) {
+    var isEdit = !!piece;
+    var data = {
+      productId: piece && piece.productId ? piece.productId : '',
+      active: piece ? piece.active : true,
+    };
+    var saving = false;
+
+    /* Selectable products: everything Available or Sold that is not
+       featured yet (in edit mode the entry's own product stays selectable).
+       Hidden (inactive) products are not offered — a showcase card links
+       to the product page, which the public cannot see when hidden. */
+    function selectableProducts() {
+      var featuredIds = {};
+      state.featured.forEach(function (f) {
+        if (isEdit && piece && f.id === piece.id) return;
+        if (f.productId) featuredIds[f.productId] = true;
+      });
+      return state.products.filter(function (p) {
+        if (p.status !== 'active' && p.status !== 'sold') return false;
+        return !featuredIds[p.id];
+      });
+    }
+
+    function currentProduct() {
+      if (!data.productId) return null;
+      return state.products.find(function (p) { return p.id === data.productId; }) || null;
+    }
+
+    function previewHtml() {
+      var prod = currentProduct();
+      return prod
+        ? AK.featuredCard({ product: prod, active: true })
+        : '<div class="fpreview__empty">' + AK.icon('image') + '<span>Pick a product to see the preview</span></div>';
+    }
+
+    AK.openSheet({
+      side: 'right',
+      title: isEdit ? 'Edit Featured Piece' : 'Add a Featured Piece',
+      description: isEdit
+        ? 'Change the selected product or its visibility'
+        : 'Pick an existing product \u2014 its own photo, title and caption are used',
+      onClose: function () { /* nothing to clean up */ },
+      build: function (body, close) {
+        body.parentElement.classList.add('sheet--form');
+        body.innerHTML =
+          '<div class="aform" id="fform"></div>' +
+          '<div class="aform-foot">' +
+          '<button type="button" class="btn btn--outline" id="ff-cancel">Cancel</button>' +
+          '<button type="button" class="btn btn--primary" id="ff-save">Save Featured Piece</button>' +
+          '</div>';
+
+        var formEl = body.querySelector('#fform');
+
+        function renderForm() {
+          var options = selectableProducts().slice();
+          var cur = currentProduct();
+          /* in edit mode, keep the entry's own (now hidden) product visible
+             in the dropdown so the admin always sees the current choice */
+          if (cur && !options.some(function (p) { return p.id === cur.id; })) {
+            options.unshift(cur);
+          }
+          formEl.innerHTML =
+            '<div class="fpreview-wrap">' +
+            '<p class="label" style="font-size:15px;">Homepage preview</p>' +
+            '<div class="fpreview" id="ff-preview">' + previewHtml() + '</div>' +
+            '</div>' +
+
+            '<div class="field"><label class="label" for="ff-product">Product <span class="req">*</span></label>' +
+            '<select class="select" id="ff-product">' +
+            '<option value=""' + (data.productId ? '' : ' selected') + ' disabled>Choose a product\u2026</option>' +
+            options.map(function (p) {
+              var label = p.title + ' \u00b7 ' + AK.fmtEGP(p.price) + ' \u00b7 ' + (C.STATUS_LABELS[p.status] || p.status);
+              return '<option value="' + AK.esc(p.id) + '"' + (data.productId === p.id ? ' selected' : '') + '>' + AK.esc(label) + '</option>';
+            }).join('') +
+            '</select>' +
+            '<p class="hint">Available and Sold products are both selectable, each one once. The homepage card uses the product\u2019s own photo, title and caption \u2014 nothing is uploaded or duplicated.</p></div>' +
+
+            '<div class="field"><label class="label" for="ff-active">Visibility</label>' +
+            '<select class="select" id="ff-active">' +
+            '<option value="1"' + (data.active ? ' selected' : '') + '>Published \u2014 shown on the homepage</option>' +
+            '<option value="0"' + (!data.active ? ' selected' : '') + '>Hidden \u2014 not shown</option>' +
+            '</select></div>';
+
+          formEl.querySelector('#ff-product').addEventListener('change', function () {
+            data.productId = this.value;
+            formEl.querySelector('#ff-preview').innerHTML = previewHtml();
+          });
+          formEl.querySelector('#ff-active').addEventListener('change', function () {
+            data.active = this.value === '1';
+          });
+        }
+
+        /* ---------------------------------------------------------- save */
+        body.querySelector('#ff-cancel').addEventListener('click', close);
+        body.querySelector('#ff-save').addEventListener('click', function () {
+          if (saving) return;
+          if (!data.productId) {
+            AK.toast.error('Choose a product to feature');
+            return;
+          }
+          saving = true;
+          var saveBtn = body.querySelector('#ff-save');
+          saveBtn.disabled = true;
+          saveBtn.innerHTML = '<span class="spin-btn">' + spinnerSmall() + 'Saving\u2026</span>';
+
+          var row = isEdit
+            ? { product_id: data.productId, active: data.active, updated_at: new Date().toISOString() }
+            : { product_id: data.productId, display_order: nextFeaturedOrder(), active: data.active, updated_at: new Date().toISOString() };
+
+          var op = isEdit
+            ? AK.db.from('featured_pieces').update(row).eq('id', piece.id)
+            : AK.db.from('featured_pieces').insert(row);
+
+          op.then(function (res) {
+            if (res.error) throw res.error;
+            saving = false;
+            AK.toast.success(isEdit ? 'Featured piece updated' : 'Added to the homepage showcase');
+            close();
+            refreshFeatured();
+          }).catch(function (err) {
+            saving = false;
+            saveBtn.disabled = false;
+            saveBtn.textContent = 'Save Featured Piece';
+            var msg = errText(err) || '';
+            /* friendly message for the one-entry-per-product rule */
+            if (/23505|duplicate|unique/i.test(msg)) AK.toast.error('That product is already featured');
+            else AK.toast.error(msg || 'Could not save the featured piece');
           });
         });
 

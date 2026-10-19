@@ -31,14 +31,14 @@ The official business introduction is shown on the **Contact Us** page
 
 | File | Purpose |
 |---|---|
-| `index.html` / `home.js` | Home: hero (official slogan), categories, featured, newly added, value props, contact + about |
+| `index.html` / `home.js` | Home: hero (official slogan), **Featured Pieces showcase**, categories, newly added, value props, contact + about |
 | `shop.html` / `shop.js` | Shop grid, filters sheet (9 official categories), price min/max, sorting, active-filter chips, **Past Gems of Antique Khan** archive |
 | `product.html` / `product.js` | Product detail: swipe gallery, dots, thumbnails, height/length (only when provided), caption, sticky buy bar, related pieces |
 | `wishlist.html` / `wishlist.js` | Saved pieces (per device, localStorage) |
 | `cart.html` / `cart.js` | Cart with quantity steppers and live availability checks against Supabase |
 | `checkout.html` / `checkout.js` | Checkout form (name, phone, optional second phone, searchable 27-governorate list, city/area, address, notes), COD/InstaPay, WhatsApp hand-off |
 | `contact.html` / `contact.js` | Contact page: official contact details, social links, About section |
-| `admin.html` / `admin.js` | Admin: Supabase Auth login, stats (Total/Available/Sold/Hidden), product CRUD, camera/gallery uploads, orders, **Settings (InstaPay + delivery fee)** |
+| `admin.html` / `admin.js` | Admin: Supabase Auth login, stats (Total/Available/Sold/Hidden), product CRUD, camera/gallery uploads, **Featured Pieces manager**, orders, **Settings (InstaPay + delivery fee)** |
 | `config.js` | **The only file you edit**: Supabase key + business settings |
 | `common.js` | Shared engine: Supabase client, cart/wishlist, header/footer, toasts, sheets, icons |
 | `style.css` | The full design system (ivory / espresso / brass, Cormorant Garamond + Jost) |
@@ -66,11 +66,16 @@ The script is **additive and non-destructive** — it is designed for your
 existing `public.products` table:
 - it never drops or recreates tables, never deletes or overwrites rows;
 - it only *adds* the optional columns the website uses
-  (`description`, `height`, `length`, `featured`, `updated_at`);
+  (`description`, `height`, `length`, `updated_at`);
 - it fixes the old `'''active'''` status default and normalizes any
   quote-wrapped status values to `active` / `sold` / `inactive`;
-- it creates the `orders` and `settings` tables, the `admin_users` allow-list,
-  Row Level Security policies and the public `product-images` Storage bucket.
+- it creates the `orders`, `settings` and `featured_pieces` tables, the
+  `admin_users` allow-list, Row Level Security policies and the public
+  `product-images` Storage bucket.
+
+> Already ran an earlier version? Just run the whole file again — every
+> section is idempotent and only what is missing gets created (e.g. the
+> `featured_pieces` table for the Featured Pieces manager).
 
 **About `image_urls`** (existing text column): the website reads it
 defensively and understands a JSON array of URLs, a JSON array of objects
@@ -183,6 +188,42 @@ inside Supabase by RLS and Storage policies, not by the website code.
 - Database changes → Supabase SQL Editor.
 - Admin account → Supabase Auth users + `admin_users` table.
 
+## 7b. Featured Pieces (homepage showcase)
+
+Admin → **Featured Pieces** is a separate manager, completely independent
+from Products. It is a **selector over the products you already have** —
+not a second product or image system:
+
+| Field | Required | Notes |
+|---|---|---|
+| Product | yes | Picked from a dropdown of your **existing products — Available and Sold are both selectable** (each product once). The card uses that product's own photo, title and caption; nothing is uploaded or duplicated |
+| Display order | yes | Position on the homepage — set by dragging (or the ↑ / ↓ buttons on touch screens) |
+| Visibility | yes | Published / Hidden |
+
+How it behaves:
+
+- The homepage shows **only Published entries, in the saved display order**
+  (section hidden entirely when there is nothing published).
+- **Selling a featured product never removes or hides its entry.** It stays
+  in the manager and on the homepage until you hide or remove the entry
+  yourself (a small "Sold" badge appears in the manager).
+- **Hide / Publish** toggles visibility without removing anything; publish
+  again whenever you want.
+- **Drag & drop** (or ↑ / ↓) reorders the cards; the order is saved to
+  Supabase instantly.
+- **Edit** changes the selected product or the visibility — that's all a
+  featured entry stores (product id + order + visibility).
+- **Remove** deletes only the featured entry (after a confirmation). The
+  product itself, its status and its photos are **never** touched — the
+  product simply stops appearing in the showcase.
+- Deleting a product in the Products manager removes its featured entry
+  automatically (the DB link is `ON DELETE CASCADE`) — its photos behave
+  exactly as before.
+- **Preview** shows exactly how the card looks on the homepage (also live
+  in the add/edit form while you pick a product).
+- Sold products still appear in **Past Gems of Antique Khan** on the shop
+  page exactly as before — Featured Pieces does not interfere with that.
+
 ## 8. Troubleshooting
 
 | Symptom | Fix |
@@ -194,3 +235,5 @@ inside Supabase by RLS and Storage policies, not by the website code.
 | Status shows odd quotes in the DB | Re-run `supabase-setup.sql` (section 1 normalizes them) |
 | New signups possible | Disable "Allow new users to sign up" (Step 2.3) |
 | Checkout insert fails | Re-run `supabase-setup.sql` and check the `orders` INSERT policy |
+| Homepage shows no Featured Pieces section | Re-run `supabase-setup.sql` (section 7 creates `featured_pieces`), then add entries in Admin → Featured Pieces |
+| "Featured Pieces" tab says row-level security | Your email is missing from `admin_users` (SQL editor, section 4) |

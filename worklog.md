@@ -227,3 +227,112 @@ Stage Summary:
 - Frontend + SQL now target the user's REAL live products table (additive-only, record-preserving, idempotent) instead of the old hypothetical schema; product URLs are id-based so no slug column/backfill is needed.
 - InstaPay and delivery fee are admin-configurable and provably never invented (unconfigured states tested).
 - USER must still do (documented in README): run supabase-setup.sql (edit admin email), create the admin Auth user (+ disable open signups), paste the anon key into config.js, optionally upload legacy photos via migrate-images.mjs, then configure InstaPay/delivery fee in Admin → Settings. Live-Supabase verification is the only step not possible in the sandbox (no anon key available here).
+
+---
+Task ID: 10
+Agent: orchestrator (Z.ai Code)
+Task: Add a separate "Featured Pieces" section to the admin (independent from Products) with add/edit/reorder/hide/delete/preview, a dedicated Supabase table, and a homepage showcase — plain HTML/CSS/vanilla JS, additive migration, all business rules preserved.
+
+Work Log:
+- Inspected existing static site (admin.js tabs Products/Orders/Settings, common.js data layer, home.js sections, supabase-setup.sql, mock service) before writing anything.
+- supabase-setup.sql: added idempotent section 7 — `featured_pieces` table (image_url NOT NULL, title/caption nullable, product_id uuid REFERENCES products(id) ON DELETE SET NULL, display_order int, active bool, timestamps) + index + full RLS (public reads active=true only; admin via is_admin() for select/insert/update/delete). Uses the existing product-images bucket + existing storage policies (featured/ folder). Header notes the file can be re-run safely.
+- common.js: new icons (grip-vertical, chevron-up, link); AK.mapFeaturedPiece, AK.fetchFeaturedPieces({all}) (public: active only, ordered by display_order then created_at; admin: all), AK.featuredCard — the single homepage card builder shared with admin previews (links to product.html?id=… only when product_id set).
+- home.js: new "From the Gallery / Featured Pieces" section between hero and categories; loads published entries only, stays `hidden` when none/error (never blocks the rest of the page).
+- admin.js: separate "Featured Pieces" tab (tab strip now Products | Featured Pieces | Orders | Settings; 4-across ≥768px, 2×2 mobile). Manager: filter chips All/Published/Hidden, drag & drop reorder (HTML5 DnD with before/after drop indicator) plus ↑/↓ buttons for touch, order persisted by renumbering (10,20,30…) with per-row PATCH; Hide/Publish toggle; Delete with confirm dialog; per-row Preview bottom sheet + live preview inside the add/edit form; single-image uploader (Choose image / Take a photo, same ≤1600px JPEG 0.82 compression, XHR progress) uploading to featured/ folder.
+- Image-safety rules implemented: storagePathFromUrl/isImageUsedByProducts/isImageUsedByFeatured/safeCleanupImage — a featured photo is deleted from Storage only when NO product and NO other featured entry references the same file; deleting a product now also skips files still used by a featured entry; hiding/deleting featured entries never writes to products. Product form's compressor/uploader refactored into shared helpers (compressToJpeg, uploadToBucket) — product upload/delete regression-tested in browser.
+- style.css: fp-grid (1/2/3 cols), fpcard showcase card (4:3 media, gradient shade, serif title, caption, VIEW PIECE cta), admin flist/fitem (grip, thumb, order chip, badges, icon row buttons), drop indicators, look-only preview containers.
+- Mock service: featured_pieces REST emulation with RLS analogue (anon sees active only), storage DELETE now really unlinks site-created files (seed/ + uploads/ fixtures protected) so cleanup rules are observable. Fixed crash-loop: `bun --hot` killed the service in this sandbox — dev script is now plain `bun index.ts` (starts via tee subshell to survive session boundaries).
+- README: Featured Pieces section (7b) with field table + behavior rules, idempotent-rerun note, troubleshooting rows.
+- public/ preview copies re-synced (config.js sandbox override preserved); grep-verified no service key/port leaks.
+- Browser-verified end-to-end through the gateway (:81) at 390×844 and 1280×800: homepage section renders only published entries in saved order (hidden one excluded), linked card navigates to product page, admin login → new tab, add with REAL image upload (tile + live preview), edit prefills + replace image + live caption preview, arrow reorder + real drag & drop (order persisted, homepage follows), hide → gone from homepage, publish → back, delete w/ confirm, preview sheet shows exact homepage card; RULE CHECKS: marking the linked product Sold left the featured piece untouched AND the sold product appeared in Past Gems of Antique Khan; deleting a featured entry whose file was also used by a product kept the file (product image still loads) while an unshared file was removed from Storage; empty state (0 published) hides the section completely; product CRUD (upload + delete + storage cleanup) regression passed; orders tab intact; no horizontal overflow at 390/1280; lint clean; mock reset to clean seed (12 products, 3 featured incl. 1 hidden, 1 order).
+
+Stage Summary:
+- Featured Pieces is a fully separate manager (own tab, own table, own controls) and the homepage showcase is live; all 11 content rules honored and browser-verified.
+- Deliverable changes: supabase-setup.sql (append-only, re-runnable), common.js, home.js, admin.js, style.css, README.md (+ public/ preview copies). USER must re-run supabase-setup.sql once in Supabase to create the featured_pieces table (additive; existing data untouched).
+- Sandbox note: mock-supabase dev script changed from `bun --hot` to `bun index.ts` because --hot crash-looped here; storage DELETE in the mock now really deletes files for testability.
+
+---
+Task ID: 10-b
+Agent: orchestrator (Z.ai Code)
+Task: Resume after session restart — verify the delivered Featured Pieces work is intact, fix sandbox preview API access, and re-run the full end-to-end verification.
+
+Work Log:
+- Re-established state: all deliverable files present and SYNCED root↔public/ (config.js differs only by the documented sandbox override); worklog Task 10 showed Featured Pieces fully implemented; supabase-setup.sql section 7 (featured_pieces + RLS) in place.
+- Found the sandbox preview path (port 3000) returned 404 for /rest/v1 + /storage/v1 because XTransformPort rewriting only happens on the Caddy gateway (:81). Fixed WITHOUT touching any deliverable: added sandbox-only rewrites in next.config.ts proxying rest/auth/storage v1 paths to the mock service (localhost:3040). Restarted Next dev; verified 200s on both :3000 and :81.
+- Browser-verified end-to-end via port 3000 (preview path) at 390×844 and 1280×800: homepage shows only published featured entries in saved order (hidden excluded), linked card navigates to product.html?id=…; admin login; Featured Pieces tab separate (Products | Featured Pieces | Orders | Settings); manager rows with order chips, link lines, badges, grip, ↑/↓/Preview/Edit/Hide/Publish/Delete.
+- Add flow: modal form with Choose image / Take a photo, REAL image fed through the hidden input (goes through app's compress→upload pipeline), live "Homepage preview" card, optional linked-product select, optional title/caption; saved as #4 Published with "Links to: …".
+- Reorder: ↑ button moved #4→#3; HTML5 drag & drop moved #1→after drop target; orders persisted server-side (renumbered 10/20/30/40) and homepage followed exactly.
+- Hide/Publish: hid Tea Set (Published 3→2) and published the hidden draft; chips updated; homepage inclusion/exclusion matched instantly.
+- Edit: prefills title/caption/link/active-state correctly; replacing the image uploaded a new file AND auto-removed the old unshared file from Storage.
+- Delete safety: confirm dialog states the linked product is not touched; deleting an entry whose file was SHARED with another featured entry kept the file; deleting the last referencing entry removed it (storage/featured/ empty afterwards).
+- Regressions: Products list (12 rows) + Add Product button, Orders (1 row, AK- code), Settings (Delivery fee/note, InstaPay number/handle/name all present); zero page errors, zero console errors.
+- `bun run lint` clean. Mock reset to the exact clean seed (12 products 9/2/1, 3 featured 2 published+1 hidden, 1 order, settings empty InstaPay/fee); storage/featured/ empty; verified anon REST counts reflect the RLS analogue.
+- Final mobile sanity: 0 horizontal overflow, 2 published cards in order, hero slogan, and all official contact links present (tel:+201200057054, wa.me/201200057054, instagram.com/Antiquekhan.EG, facebook.com/AntiqueKhan.Egypt).
+
+Stage Summary:
+- Featured Pieces delivery CONFIRMED intact and fully working through the user-visible preview path; all 11 spec rules re-verified live.
+- Sandbox infra improvement: mock Supabase now reachable on port 3000 via next.config.ts rewrites (deliverable untouched — GitHub Pages serves the static files and talks to real Supabase directly).
+- No changes were needed to any deliverable file this session; user-facing next steps remain the ones documented in README.md (run supabase-setup.sql once, create the admin Auth user, paste anon key into config.js, optionally migrate legacy photos, configure InstaPay/delivery fee in Admin → Settings).
+
+---
+Task ID: 11
+Agent: orchestrator (Z.ai Code)
+Task: REDESIGN Featured Pieces per user clarification — a manager for SELECTING and ARRANGING EXISTING products (Available + Sold), not a separate image/product system. No uploads, no duplication; card uses the product's own image/title/caption.
+
+Work Log:
+- common.js: mapFeaturedPiece now maps {id, product_id, display_order, active, product:products(*) embed} and reuses AK.mapProduct for the embedded product; fetchFeaturedPieces selects '*, product:products(*)' (public: active only; admin: all); featuredCard builds the homepage card ENTIRELY from the product's own cover image, title and caption (always links to product.html?id=…, returns '' when the product didn't resolve).
+- home.js: renders only entries whose product resolved; section stays hidden when nothing published.
+- admin.js Featured Pieces tab rebuilt as a pure selector: rows show the product's CURRENT record (resolved live from state.products, so a product marked Sold in the Products tab immediately shows its Sold badge), product status badge + Published/Hidden badge, order chip, grip, ↑/↓, Preview, Edit, Hide/Publish, Remove; Add/Edit modal = product dropdown (Available + Sold, each product once, already-featured and hidden products excluded; the entry's own product stays selectable in Edit) + live homepage preview + visibility select; save inserts/updates only {product_id, display_order, active}; duplicate attempts surface "That product is already featured" (23505); Remove confirm states the product/status/photos are NOT touched; all featured-image upload/cleanup code and isImageUsedByFeatured removed (products-only safeCleanupImage remains for product deletes).
+- supabase-setup.sql section 7 rewritten: featured_pieces = {id, product_id NOT NULL UNIQUE (unique index) REFERENCES products(id) ON DELETE CASCADE, display_order, active, timestamps}; legacy-safe additive path (adds product_id, relaxes old image_url NOT NULL in guarded DO block, guarded unique index) — still idempotent, never drops data; header/footer docs updated.
+- Mock service: featured_pieces GET embeds product (inactive products resolve null for anon, RLS analogue); POST validates FK (23503) + uniqueness (23505); PATCH validates product change; products DELETE now cascades its featured entry (cascade analogue); seed.json featured rows are product selectors: #10 Mantel Clock (Available), #20 Sèvres Vase (SOLD, published — proves rule 4), #30 Writing Desk (hidden draft).
+- README 7b rewritten for the selector model (field table: Product/Display order/Visibility; behavior rules incl. sold-stays-featured, remove-only-unfeaturing, product-delete cascade).
+- Browser-verified end-to-end (port 3000, 390×844 + 1280×800): homepage cards render product title/photo/caption in saved order incl. a SOLD product; admin rows show fresh product data; Add via dropdown (featured+hidden products absent from options) → published #4; drag & drop #4→#2 with order persisted (10/20/30/40) and homepage following; RULE 4: marking the featured Ottoman Brass Lantern Sold in Products kept its entry Published (row badge updates live) and the homepage kept showing it; Hide (vase) → homepage excludes; Edit (change product + publish hidden entry) prefilled and saved correctly; API checks: duplicate insert → 409 23505; product delete → its featured entry cascade-removed; UI Remove → entry gone, product still in Products (11 products); zero page/console errors; no horizontal overflow mobile+desktop; lint clean; public/ copies synced; mock reset to clean seed.
+
+Stage Summary:
+- Featured Pieces is now exactly what the user asked: a separate sidebar manager for selecting and arranging EXISTING products (Available + Sold) — the featured image IS the product's image; no uploads, no duplicates, no standalone entries.
+- DB stores only product_id + display_order + active per entry (unique per product, ON DELETE CASCADE); RLS unchanged (public reads active only; admin full).
+- Deliverable changes: supabase-setup.sql, common.js, home.js, admin.js, style.css, README.md (+ public/ preview copies). USER must re-run supabase-setup.sql once in Supabase (safe to re-run; handles both fresh and previously-created tables).
+
+---
+Task ID: 12
+Agent: orchestrator (Z.ai Code)
+Task: Post-restart re-verification of the Task 11 Featured Pieces REDESIGN (existing-product selector manager) — confirm on-disk state, re-run the full browser E2E, re-prove all 8 user rules, reset the sandbox to clean seed.
+
+Work Log:
+- Verified on disk that the Task 11 redesign is fully present (no code changes needed): supabase-setup.sql §7 = featured_pieces {id, product_id NOT NULL UNIQUE REFERENCES products(id) ON DELETE CASCADE, display_order, active} with legacy-safe additive path (adds product_id, relaxes old image_url NOT NULL, guarded unique index, re-runnable); common.js mapFeaturedPiece/fetchFeaturedPieces('*, product:products(*)')/featuredCard built entirely from the product's own cover image/title/caption; admin.js Featured tab = pure selector (rows resolve the product's CURRENT record live; no ff-title/ff-caption/upload code remains); home.js renders only entries whose product resolved; README 7b = selector-model docs; root↔public/ all SYNCED; mock seed.json featured rows are product references (Clock available+published, Sèvres Vase SOLD+published, Writing Desk sold+hidden).
+- bun run lint → clean. Mock (3040) + Next dev (3000) both healthy.
+- Browser E2E (agent-browser, port 3000):
+  · Homepage 390×844: fp-section shows 2 published cards in saved order — French Bronze Mantel Clock (Available) then Sèvres-Style Porcelain Vase (SOLD ⇒ rule 4 by seed), cards use the product's own image + link to product.html?id=…; scrollWidth==clientWidth 390/390; zero console/page errors; clicking the sold vase card navigates to its product page.
+  · Admin: separate Featured Pieces tab (Products | Featured Pieces | Orders | Settings); rows = #1 Clock (Available+Published), #2 Vase (Sold+Published), #3 Desk (Sold+Hidden w/ Publish), each with order chip, grip, ↑/↓, Preview, Edit, Hide/Publish, Remove; chips All(3)/Published(2)/Hidden(1).
+  · Add: sheet "Pick an existing product — its own photo, title and caption are used"; dropdown = exactly the 8 Available/Sold products not already featured and not hidden (Private Estate Acquisition absent); NO file input in the form (hasUploadInput=false); selecting a product renders the live homepage preview with the product's own seed image; Save → toast + row #4 Published.
+  · Reorder: Move earlier moved lantern #4→#3; REST shows renumbered display_order 10/20/30 persisted; homepage followed instantly (Clock, Vase, Lantern); hidden desk invisible to anon REST (RLS analogue).
+  · RULE 4 live: marked Ottoman Brass Lantern Sold in Products → its featured entry stayed Published at #3 with the row badge flipping to Sold live; homepage reload still showed it.
+  · RULE 3 proof: after removing the lantern entry, the Add dropdown listed "Ottoman Brass Lantern · EGP 4,800 · Sold" — Sold products are selectable.
+  · Remove: confirm dialog reads "The product itself, its status and its photos are NOT touched"; confirming removed only the entry (3 rows left) and the product stayed in Products.
+  · Edit: opened on hidden Desk — prefilled its own product (stays selectable) + visibility Hidden + live preview; switching to Published saved → homepage showed the Desk.
+  · Hide: hid the Vase → badge flipped to Hidden, homepage excluded it instantly (Clock, Desk only).
+  · API integrity: duplicate product_id POST → 409 23505 (one entry per product); unknown product_id POST → 409 23503; DELETE product → its featured entry cascade-removed while other entries survived.
+  · Desktop 1280×800: fp-grid 3 columns, no overflow, footer flush at document bottom on the long home page and sticky gap 0 on the short wishlist page; zero errors.
+- Reset mock to clean seed (cp seed.json → data.json + restart): 12 products (11 visible anon / 1 inactive), 3 featured entries (2 published incl. the SOLD vase, 1 hidden), 1 order; final mobile sanity on the seed: homepage order [Clock, Vase], 390/390 no overflow, zero console errors, all official contact links present (tel/wa/instagram/facebook).
+
+Stage Summary:
+- Featured Pieces REDESIGN (Task 11) CONFIRMED fully delivered and browser-verified after the session restart: it is a manager for selecting and arranging EXISTING products — Available and Sold both selectable, sold entries persist until hidden/removed, the card uses the product's own image/title/caption, deleting an entry only unfeatures, and Supabase stores only product_id + display_order + active. No deliverable file was modified this session.
+- User-facing next steps unchanged (README): re-run supabase-setup.sql once (section 7 creates/migrates featured_pieces safely), create the admin Auth user, paste the anon key into config.js, then curate the showcase in Admin → Featured Pieces.
+
+---
+Task ID: 13
+Agent: orchestrator (Z.ai Code)
+Task: Remove the legacy "Curated / Featured Antiques" homepage section (and the per-product "Featured piece" checkbox that fed it), keeping the curated "From the Gallery / Featured Pieces" showcase as the only homepage curation.
+
+Work Log:
+- home.js: deleted the "Featured Antiques" section markup (eyebrow "Curated", #featured grid) and all of its loading logic — featuredEl, renderFeatured, the featured:true query, the checkFeatured coordinator and the newest-products fallback; "Newly Added" now renders independently from a single {status:'active', sort:'newest'} fetch with its own error/empty states and Retry. Featured Pieces (fp-section/fp-grid) untouched.
+- admin.js: removed the "Featured piece" switchrow (f-featured) from the product form, its data.featured form state, its change listener and the featured field from the save payload — the checkbox only fed the removed section and would have been misleading. Featured Pieces manager untouched.
+- supabase-setup.sql: dropped the now-unused `alter table public.products add column if not exists featured …` line (additive/idempotent file; already-migrated DBs keep the harmless column, nothing is ever dropped).
+- common.js: updated the mapping comment only (mapProduct's generic featured passthrough and fetchProducts' featured filter param left as harmless data-layer capabilities).
+- README.md: file table row for home.js no longer lists "featured"; the additive-columns list now reads description/height/length/updated_at.
+- bun run lint → clean; root↔public/ re-synced (home.js, admin.js, common.js).
+- Browser-verified (agent-browser): homepage 390×844 + 1280×800 — sections are now exactly [Featured pieces, Browse by category, Newly added antiques, Why shop with us, Contact Antique Khan]; #featured element gone; Featured Pieces showcase renders Clock+Sèvres Vase in saved order; Newly Added renders 4 products independently; no horizontal overflow; zero console/page errors. Admin: product edit form has no Featured checkbox (uploader/status/title intact), a no-change Save round-trip succeeded ("Piece updated") proving the payload without the featured column works; Featured Pieces tab intact (3 rows + Add button).
+
+Stage Summary:
+- Homepage curation is now single-source: the Featured Pieces manager only. The legacy featured-checkbox flow is fully removed from UI, payload, SQL and docs (no destructive DB change — an already-migrated DB simply keeps an unused column).
+- Deliverable changes: home.js, admin.js, supabase-setup.sql, README.md (+ public/ preview copies of the JS). No DB data or other functionality touched.
