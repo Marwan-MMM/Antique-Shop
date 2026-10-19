@@ -27,12 +27,18 @@
     '</div></div></div></section>' +
 
     /* Featured Pieces — admin-curated showcase (separate from products;
-       hidden entirely while there is nothing published) */
+       hidden entirely while there is nothing published). Same product
+       cards as "Newly Added", in a horizontal carousel: swipe on touch,
+       arrows + wheel on desktop. */
     '<section id="fp-section" aria-label="Featured pieces" hidden>' +
     '<div class="container section">' +
     '<div class="section-head"><div><p class="eyebrow">From the Gallery</p><h2 class="section-head__title">Featured Pieces</h2></div>' +
     '<a href="shop.html" class="viewall">View all →</a></div>' +
-    '<div id="fp-grid" class="fp-grid"></div>' +
+    '<div class="hscroll-wrap">' +
+    '<button type="button" class="hscroll-arrow hscroll-arrow--prev" aria-label="Scroll Featured Pieces backward">' + AK.icon('chevron-left') + '</button>' +
+    '<div id="fp-grid" class="hscroll no-scrollbar" tabindex="0" role="group" aria-label="Featured pieces carousel"></div>' +
+    '<button type="button" class="hscroll-arrow hscroll-arrow--next" aria-label="Scroll Featured Pieces forward">' + AK.icon('chevron-right') + '</button>' +
+    '</div>' +
     '</div></section>' +
 
     /* Categories */
@@ -154,24 +160,25 @@
   else newlyEl.innerHTML = '';
 
   /* Featured Pieces: entries selected in Admin → Featured Pieces, each one
-     an EXISTING product (Available or Sold) shown with its own photo, title
-     and caption. Only published entries, in the saved order; sold products
-     keep appearing here until the admin hides or removes the entry. The
-     section stays hidden when nothing is published or the table isn't set
-     up yet. */
+     an EXISTING product (Available or Sold) shown as the same product card
+     used by "Newly Added", in a horizontal carousel. Only published
+     entries, in the saved order; sold products keep appearing here until
+     the admin hides or removes the entry. The section stays hidden when
+     nothing is published or the table isn't set up yet. */
   if (AK.isConfigured()) {
     AK.fetchFeaturedPieces().then(function (res) {
       if (res.error || !res.pieces || !res.pieces.length) return;
-      var grid = document.getElementById('fp-grid');
+      var track = document.getElementById('fp-grid');
       var section = document.getElementById('fp-section');
-      if (!grid || !section) return;
+      if (!track || !section) return;
       var cards = res.pieces
-        .map(function (f) { return AK.featuredCard(f); })
+        .map(function (f, i) { return AK.featuredCard(f, i < 2); })
         .filter(Boolean)
         .join('');
       if (!cards) return;
-      grid.innerHTML = cards;
+      track.innerHTML = cards;
       section.hidden = false;
+      AK.initHScroll(track);
     });
   }
 })();

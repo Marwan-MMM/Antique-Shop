@@ -771,28 +771,74 @@ var ICONS = {
     });
   };
 
-  /* The homepage showcase card — built entirely from the selected
-     product's own data. Shared with the admin manager's preview so what
-     the admin sees is exactly what visitors get. */
-  AK.featuredCard = function (f) {
+  /* The homepage Featured Pieces card — the EXACT same product card used
+     by the "Newly Added" section, so the whole homepage is consistent and
+     the admin preview shows precisely what visitors get. Sold pieces show
+     their Sold badge and a disabled button, exactly like in Past Gems.
+     Shared with the admin manager's previews. */
+  AK.featuredCard = function (f, priority) {
     var p = f.product;
     if (!p) return '';
-    var img = AK.mainImage(p);
-    var link = 'product.html?id=' + encodeURIComponent(p.id);
-    var text =
-      '<h3 class="fpcard__title">' + AK.esc(p.title) + '</h3>' +
-      (p.caption ? '<p class="fpcard__cap">' + AK.esc(p.caption) + '</p>' : '');
-    var inner =
-      '<div class="fpcard__media">' +
-      (img
-        ? '<img src="' + AK.esc(img) + '" alt="' + AK.esc(p.title) + '" loading="lazy" decoding="async" draggable="false" onerror="AK.imgFail(this)" />'
-        : '') +
-      '<div class="fpcard__shade" aria-hidden="true"></div>' +
-      '</div>' +
-      '<div class="fpcard__body">' + text +
-      '<span class="fpcard__cta">View piece ' + AK.icon('arrow-right') + '</span>' +
-      '</div>';
-    return '<a class="fpcard" href="' + link + '" aria-label="' + AK.esc(p.title) + '">' + inner + '</a>';
+    return AK.productCard(p, priority);
+  };
+
+  /* Horizontal carousel enhancement for a scroll track inside a
+     .hscroll-wrap: wires the prev/next arrow buttons (desktop), converts
+     the vertical mouse wheel to horizontal scrolling over the track (the
+     page keeps scrolling normally at either edge), and keeps the arrow
+     states in sync on scroll/resize. Touch swiping and trackpad scrolling
+     stay fully native — CSS scroll-snap does the polish. */
+  AK.initHScroll = function (track) {
+    if (!track || track.dataset.hscrollInit) return;
+    track.dataset.hscrollInit = '1';
+    var wrap = track.closest('.hscroll-wrap');
+    var prev = wrap ? wrap.querySelector('.hscroll-arrow--prev') : null;
+    var next = wrap ? wrap.querySelector('.hscroll-arrow--next') : null;
+    var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var behavior = reduceMotion ? 'auto' : 'smooth';
+    var EDGE = 4; /* px tolerance for rounding */
+
+    function maxScroll() { return track.scrollWidth - track.clientWidth; }
+    function update() {
+      var max = maxScroll();
+      var hasOverflow = max > EDGE;
+      if (prev) {
+        prev.classList.toggle('is-hidden', !hasOverflow);
+        prev.disabled = !hasOverflow || track.scrollLeft <= EDGE;
+      }
+      if (next) {
+        next.classList.toggle('is-hidden', !hasOverflow);
+        next.disabled = !hasOverflow || track.scrollLeft >= max - EDGE;
+      }
+    }
+    function step() { return Math.max(track.clientWidth * 0.85, 240); }
+    if (prev) prev.addEventListener('click', function () { track.scrollBy({ left: -step(), behavior: behavior }); });
+    if (next) next.addEventListener('click', function () { track.scrollBy({ left: step(), behavior: behavior }); });
+    track.addEventListener('scroll', update, { passive: true });
+    window.addEventListener('resize', update);
+    /* mouse wheel over the track scrolls it horizontally; the page keeps
+       scrolling normally at either edge. Scroll-snap is suspended while
+       the wheel is active (each small step would otherwise be pulled back
+       to the nearest card) and restored once the wheel idles, letting the
+       row settle smoothly onto the closest card. */
+    var snapTimer = null;
+    track.addEventListener('wheel', function (e) {
+      var max = maxScroll();
+      if (max <= EDGE) return;
+      /* sideways deltas (trackpad) scroll natively */
+      if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+      var d = e.deltaY;
+      if ((d < 0 && track.scrollLeft <= EDGE) || (d > 0 && track.scrollLeft >= max - EDGE)) return;
+      e.preventDefault();
+      track.style.scrollSnapType = 'none';
+      track.scrollLeft += d;
+      if (snapTimer) clearTimeout(snapTimer);
+      snapTimer = setTimeout(function () {
+        snapTimer = null;
+        track.style.scrollSnapType = '';
+      }, 180);
+    }, { passive: false });
+    update();
   };
 
   /* ------------------------------------------------------------------ */

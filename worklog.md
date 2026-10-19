@@ -336,3 +336,38 @@ Work Log:
 Stage Summary:
 - Homepage curation is now single-source: the Featured Pieces manager only. The legacy featured-checkbox flow is fully removed from UI, payload, SQL and docs (no destructive DB change — an already-migrated DB simply keeps an unused column).
 - Deliverable changes: home.js, admin.js, supabase-setup.sql, README.md (+ public/ preview copies of the JS). No DB data or other functionality touched.
+
+---
+Task ID: 14
+Agent: orchestrator (Z.ai Code)
+Task: Make the Featured Pieces section match the Newly Added section exactly (same design/styling/layout/product cards) and turn it into a smooth horizontal carousel — swipe on mobile; mouse wheel/trackpad + visible left/right arrows on desktop. No other sections or functionality changed.
+
+Work Log:
+- common.js: AK.featuredCard now returns the EXACT same AK.productCard markup used by Newly Added (category, serif title, price, Add-to-Cart/Sold button, wishlist heart, status badge; sold pieces keep their Sold badge + disabled button) — so the homepage is consistent AND the admin previews (form + sheet) show precisely what visitors get. Added AK.initHScroll(track): generic carousel enhancer that wires prev/next arrows, keeps arrow disabled/hidden states in sync on scroll/resize, auto-hides arrows when everything fits, and converts vertical mouse wheel to horizontal track scrolling (snap suppressed while wheeling via style.scrollSnapType='none', restored after a 180ms idle so proximity snap settles the row onto the nearest card; page scrolling still takes over at either edge; sideways trackpad deltas stay native). Respects prefers-reduced-motion for programmatic scrolls.
+- home.js: fp-section rebuilt as .hscroll-wrap + circular chevron arrows + #fp-grid track (.hscroll no-scrollbar, tabindex=0 role=group aria-label for keyboard scrolling); cards render via AK.featuredCard(f, i<2) — identical to renderNewly's cards; hidden-when-nothing-published behavior preserved; initHScroll wired after the cards render.
+- style.css: removed the now-dead .fp-grid + .fpcard* block; added .hscroll-wrap/.hscroll (flex, overflow-x auto, overscroll-behavior-x contain, scroll-snap-type x proximity, momentum touch scrolling) with card widths matching the grid's visible counts (78% phones / 2-up ≥480 / 3-up ≥768 / 4-up ≥1024, exact calc() with gaps) and .hscroll-arrow (44px+ circular, ivory bg, border, shadow, hover→espresso, disabled dim at edges, visibility:hidden when no overflow) shown from 1024px up. Newly Added and every other section untouched.
+- Root↔public/ synced (home.js, common.js, style.css); bun run lint clean.
+- Bug found+fixed during verification: with scroll-snap active, each single wheel step was snapped back to the nearest card start (sync read showed the scroll, 300ms later 0) — fixed by suspending snap during active wheeling and restoring it on idle (standard carousel pattern); re-verified with a realistic 6-tick wheel burst traversing the full track and settling on the end snap point.
+- Also simplified the arrow media query from (min-width:1024px) and (hover:hover) and (pointer:fine) to plain (min-width:1024px): the headless test env reports hover:none/pointer:none, and large touch screens benefit from tappable arrows too (they remain full swipe users).
+- Browser-verified (agent-browser, port 3000): card PARITY (fp card className === Newly Added card className) on mobile + desktop; admin form preview and preview sheet render the same .pcard (incl. sold state with disabled button); MOBILE 390×844 — track scrollable (564/358), snap 'x proximity', swipe/scrollBy works, arrows hidden, no page overflow; DESKTOP 1280×800 with 5 published entries (3 added via API for testing) — 4.2 cards visible, arrows visible, prev disabled at start, next click smooth-scrolled 0→273, next disabled at end, prev click returns to 0, wheel burst 0→273 with end clamp (page takes over at edges), reverse wheel scrolls back, no page overflow (arrow overhang −1.125rem safely inside 2rem container padding); sold vase card shows Sold badge + disabled button; Newly Added still a 4-card grid; zero console/page errors; mock reset to clean seed (2 published entries — desktop arrows auto-hide when everything fits, correct behavior).
+
+Stage Summary:
+- Featured Pieces now looks and behaves exactly like Newly Added (same product card component) but as a smooth horizontal carousel: swipe + momentum + snap on touch, arrows + free wheel/trackpad scrolling on desktop, keyboard-scrollable track, reduced-motion respected.
+- Deliverable changes: common.js, home.js, style.css (+ public/ copies). No DB, admin-manager, or other-section changes; lint clean; sandbox reset to seed.
+---
+Task ID: 14 (post-restart re-verification)
+Agent: orchestrator (Z.ai Code)
+Task: Independently re-verify the Featured Pieces → Newly Added parity + horizontal carousel delivery after the session restart (no code changes expected; fix only if verification finds defects).
+
+Work Log:
+- Confirmed on disk that the full Task 14 implementation is present and root↔public SYNCED (common.js AK.featuredCard = AK.productCard passthrough + AK.initHScroll; home.js .hscroll-wrap + chevron arrows + #fp-grid.hscroll track + initHScroll after render; style.css .hscroll/.hscroll-arrow block, .fp-grid/.fpcard* removed). bun run lint clean. Mock 3040 + Next dev 3000 healthy; seed intact (12 products, 2 published + 1 hidden featured, 1 order).
+- MOBILE 390×844: FP renders Clock+Sèvres Vase in saved order, every card className === 'pcard' (exact Newly Added parity), track scrollable 564/358 (scrollBy swipe 0→206→0), scroll-snap-type x proximity, arrows display:none on mobile, no page overflow (scrollWidth==clientWidth 390/390).
+- DESKTOP 1280×800 with 5 published entries (3 added via admin-auth API POST → 201; anon POST correctly 403 = RLS analogue): 5 .pcard cards, row overflow 273px, arrows display:flex, prev disabled at start / next enabled.
+- Arrow click flow: next → 0→273 clamped to end, next auto-disabled at end + prev enabled; prev → back to 0, prev disabled + next re-enabled. State machine correct.
+- Wheel flow: 6×deltaY burst → track scrolls 0→273 with page scrollY unchanged, snap suspended during wheeling (style.scrollSnapType='none') and restored after idle; reverse burst scrolls back; deltaY<0 at left edge and deltaY>0 at right edge leave the track clamped (page takes over at edges).
+- Sold parity: Sèvres Vase card shows Sold badge + disabled Sold button + sold shade, identical to Newly Added sold cards. Newly Added still .grid-products--md4 with 4 cards — untouched. Track keyboard-scrollable (tabindex=0 + focus + scrollBy). Zero console errors, zero page errors at both widths.
+- Screenshots: /tmp/fp-desktop.png (4-up cards, both arrows, sold state) and /tmp/fp-mobile.png (78% card + peeking next card, no arrows).
+- Reset mock to clean seed; final seed sanity: mobile [Clock, Vase] scrollable/overflow-free, desktop 2 cards fit → arrows auto-hidden (is-hidden), Newly Added intact, no overflow; root↔public re-checked SYNCED; lint clean.
+
+Stage Summary:
+- Task 14 delivery RE-CONFIRMED after restart with zero defects found and zero code changes needed: Featured Pieces uses the exact Newly Added product card, in a smooth horizontal carousel (swipe+snap on touch; arrows+wheel+trackpad on desktop with correct edge handoff and auto-hide when everything fits); no other section, page, or functionality changed.
